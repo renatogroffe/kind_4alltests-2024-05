@@ -1,0 +1,34 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  Path_YAMLIntegrationTests: './AutomationEnvironment'
+
+jobs:
+
+  tests:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Verificar se o kind esta instalado
+      run: kind
+    - name: Criar cluster de testes com o kind
+      run: |
+        cd ${{ env.Path_YAMLIntegrationTests }}
+        kind create cluster --name kind-01 --config=kind-cluster-config-automation-env.yaml
+    - name: Testar o cluster Kubernetes criado com o kind
+      run: |
+        echo ' '
+        echo 'Cluster Kubernetes local em funcionamento...'
+        echo ' '
+        kubectl get services
+    - name: Exibir containers em execucao
+      run: docker container ls
+

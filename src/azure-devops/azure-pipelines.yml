@@ -1,0 +1,124 @@
+trigger:
+- main
+
+resources:
+- repo: self
+
+variables:
+
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: 'e32ae95a-ddba-4c77-a11e-dea25cef6a91'
+  imageRepository: 'apisuportemongok8s'
+  containerRegistry: 'groffeazuredevops.azurecr.io'
+  dockerfilePath: '**/Dockerfile'
+  tag: '$(Build.BuildId)'
+  imagePullSecret: 'groffeazuredevops6305-auth'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+  Path_YAMLIntegrationTests: './AutomationEnvironment'
+  Path_Tests: './Tests'
+  Collection_Postman: 'ChamadosSuporteMongoDB.postman_collection.json'
+  Iterations: 10
+
+stages:
+- stage: BuildAndTests
+  displayName: Build and Tests stage
+  jobs:
+  - job: BuildAndTests
+    displayName: BuildAndTests
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build da imagem
+      inputs:
+        containerRegistry: '$(dockerRegistryServiceConnection)'
+        repository: '$(imageRepository)'
+        command: 'build'
+        Dockerfile: '**/Dockerfile'
+        tags: |
+          $(tag)
+          latest
+    - task: replacetokens@5
+      displayName: Acertar tag da imagem no arquivo YAML de Deployment local
+      inputs:
+        targetFiles: '**/AutomationEnvironment/deployment-automation-env.yml'
+        encoding: 'auto'
+        tokenPattern: 'default'
+        writeBOM: true
+        actionOnMissing: 'warn'
+        keepToken: false
+        actionOnNoFiles: 'continue'
+        enableTransforms: false
+        enableRecursion: false
+        useLegacyPattern: false
+        defaultValue: '$(containerRegistry)/$(imageRepository):$(tag)'
+        enableTelemetry: true
+    - script: cat '$(Path_YAMLIntegrationTests)/deployment-automation-env.yml'
+      displayName: Exibir conteúdo do arquivo YAML de Deployment local
+    - script: kind
+      displayName: Verificar instalacao do kind
+    - script: |
+        cd $(Path_YAMLIntegrationTests)
+        kind create cluster --name kind-01 --config=kind-cluster-config-automation-env.yaml
+      displayName: Criar cluster Kubernetes local com kind
+    - script: |
+        echo ' '
+        echo 'Cluster Kubernetes local em funcionamento...'
+        echo ' '
+        kubectl get services
+      displayName: Testar o cluster local
+    - script: docker container ls
+      displayName: Exibir containers em execução
+    - script: kind load docker-image $(containerRegistry)/$(imageRepository):$(tag) --name kind-01
+      # Documentação: https://kind.sigs.k8s.io/docs/user/quick-start/#loading-an-image-into-your-cluster
+      displayName: Carregar imagem para testes no cluster local (kind)
+    - script: |
+        kubectl create namespace integrationtests
+        kubectl get namespaces
+      displayName: Criar namespace integrationtests
+    - script: |
+        cd $(Path_YAMLIntegrationTests)
+        kubectl apply -f secret-automation-env.yml -n integrationtests
+        kubectl apply -f deployment-automation-env-mongodb.yml -n integrationtests
+        kubectl get all -n integrationtests
+        echo ' '
+        echo 'Aguardando a inicialização dos serviços no cluster (40 segundos)...'
+        echo ' '
+        sleep 40s
+        kubectl apply -f deployment-automation-env.yml -n integrationtests
+        kubectl get all -n integrationtests
+        echo ' '
+        echo 'Aguardando a inicialização dos serviços no cluster (10 segundos)...'
+        echo ' '
+        sleep 10s
+        kubectl get all -n integrationtests
+      displayName: Deployment do ambiente de testes no namespace integrationtests
+    - script: |
+        echo "** Versão Global do Newman **"
+        newman -v
+        npm install newman-reporter-htmlextra@1.23.1
+        npm install newman-reporter-junitfullreport@1.0.4
+      displayName: Instalar packages newman-reporter-htmlextra e newman-reporter-junitfullreport
+      condition: always() 
+    - script: |
+        cd $(Path_Tests)
+        npx newman run $(Collection_Postman) -n $(Iterations) -r cli,htmlextra,junitfullreport
+      displayName: Executar testes da API REST com Newman
+      condition: always() 
+    - script: |
+        cd $(Path_Tests)/newman
+        ls
+      displayName: Listar arquivos gerados após testes da API REST com Newman
+      condition: always() 
+    - task: PublishTestResults@2
+      inputs:
+        testResultsFormat: 'JUnit'
+        testResultsFiles: '**/newman/*.xml'
+        searchFolder: '$(Build.SourcesDirectory)'
+      displayName: Publicar sumário dos testes com base no XML gerado
+      condition: always()
+    - script: echo 'Simulando Build...'
+      displayName: Simular Build
